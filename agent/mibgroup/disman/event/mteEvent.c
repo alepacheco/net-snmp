@@ -215,7 +215,10 @@ mteEvent_removeEntry(netsnmp_tdata_row *row)
         return;                 /* Nothing to remove */
     entry = (struct mteEvent *)
         netsnmp_tdata_remove_and_delete_row(event_table_data, row);
-    SNMP_FREE(entry);
+    if (entry && entry->in_use)
+        entry->removed = 1;     /* freed by mteEvent_fire */
+    else
+        SNMP_FREE(entry);
 }
 #endif /* NETSNMP_FEATURE_REMOVE_MTEEVENT_REMOVEENTRY */
 
@@ -265,6 +268,11 @@ mteEvent_fire( char *owner, char *event,      /* Event to invoke    */
         return -1;
     }
 
+    /*
+     * Firing the event waits for responses, which processes other
+     *   requests in the meantime.  Those may remove this event.
+     */
+    entry->in_use++;
     if (entry->mteEventActions & MTE_EVENT_NOTIFICATION) {
         DEBUGMSGTL(("disman:event:fire", "Firing notification event\n"));
         _mteEvent_fire_notify( entry, trigger, suffix, s_len );
@@ -277,6 +285,8 @@ mteEvent_fire( char *owner, char *event,      /* Event to invoke    */
         fired = 1;
     }
 #endif /* NETSNMP_NO_WRITE_SUPPORT */
+    if (--entry->in_use == 0 && entry->removed)
+        SNMP_FREE(entry);
 
     if (!fired)
         DEBUGMSGTL(("disman:event:fire", "Matched event is empty\n"));
