@@ -64,6 +64,21 @@ init_schedCore(void)
 
 
 /*
+ * Free an entry that is no longer in the table
+ */
+static void
+_sched_free( struct schedTable_entry *entry )
+{
+    if (entry->session &&
+        entry->session != netsnmp_query_get_default_session_unchecked()) {
+        snmp_close(entry->session);
+        entry->session = NULL;
+    }
+    SNMP_FREE(entry);
+}
+
+
+/*
  * Callback to invoke a scheduled action
  */
 static void
@@ -91,7 +106,17 @@ _sched_callback( unsigned int reg, void *magic )
                                      (u_char *)&entry->schedValue,
                                          sizeof(entry->schedValue));
 
+    /*
+     * The assignment waits for its response, which processes other
+     *   requests in the meantime.  Those, or the assignment itself,
+     *   may remove this entry: keep it until we are done.
+     */
+    entry->in_use++;
     ret = netsnmp_query_set( &assign, entry->session );
+    if (--entry->in_use == 0 && entry->removed) {
+        _sched_free(entry);
+        return;
+    }
     if ( ret != SNMP_ERR_NOERROR ) {
         DEBUGMSGTL(( "disman:schedule:callback",
                      "assignment failed (%d)\n", ret));
@@ -518,13 +543,13 @@ schedTable_removeEntry(netsnmp_tdata_row *row)
     if (entry) {
         DEBUGMSGTL(("disman:schedule:entry", "remove entry (%s, %s)\n",
                                      entry->schedOwner, entry->schedName));
-        if (entry->schedCallbackID)
+        if (entry->schedCallbackID) {
             snmp_alarm_unregister(entry->schedCallbackID);
-        if (entry->session &&
-            entry->session != netsnmp_query_get_default_session_unchecked()) {
-            snmp_close(entry->session);
-            entry->session = NULL;
+            entry->schedCallbackID = 0;
         }
-        SNMP_FREE(entry);
+        if (entry->in_use)
+            entry->removed = 1;
+        else
+            _sched_free(entry);
     }
 }
